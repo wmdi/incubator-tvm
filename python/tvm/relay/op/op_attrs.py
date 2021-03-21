@@ -28,6 +28,9 @@ class Conv1DAttrs(Attrs):
 class Conv2DAttrs(Attrs):
     """Attributes for nn.conv2d"""
 
+@tvm._ffi.register_object("relay.attrs.IIConv2DAttrs")
+class IIConv2DAttrs(Attrs):
+    """Attributes for nn.iiconv2d"""
 
 @tvm._ffi.register_object("relay.attrs.Conv2DWinogradAttrs")
 class Conv2DWinogradAttrs(Attrs):

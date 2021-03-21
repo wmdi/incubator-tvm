@@ -114,6 +114,10 @@ reg.register_pattern("nn.sparse_transpose", reg.OpPattern.OUT_ELEMWISE_FUSABLE)
 reg.register_strategy("nn.conv1d", strategy.conv1d_strategy)
 reg.register_pattern("nn.conv1d", OpPattern.OUT_ELEMWISE_FUSABLE)
 
+# iiconv2d
+reg.register_strategy("nn.iiconv2d", strategy.iiconv2d_strategy)
+reg.register_pattern("nn.iiconv2d", OpPattern.OPAQUE)
+
 
 # conv2d
 reg.register_strategy("nn.conv2d", strategy.conv2d_strategy)

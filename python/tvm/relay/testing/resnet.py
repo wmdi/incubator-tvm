@@ -37,6 +37,7 @@ def residual_unit(
     bottle_neck=True,
     data_layout="NCHW",
     kernel_layout="IOHW",
+    lane=None,
 ):
     """Return ResNet Unit symbol for building ResNet
 
@@ -61,6 +62,10 @@ def residual_unit(
     name : str
         Base name of the operators
     """
+    iiinfo = {
+        "table_size": (1, 256 * lane),
+        "table_dtype": "uint8",
+    } if lane else None
     bn_axis = data_layout.index("C")
     if bottle_neck:
         bn1 = layers.batch_norm_infer(data=data, epsilon=2e-5, axis=bn_axis, name=name + "_bn1")
@@ -74,6 +79,7 @@ def residual_unit(
             name=name + "_conv1",
             data_layout=data_layout,
             kernel_layout=kernel_layout,
+            iiinfo=iiinfo,
         )
         bn2 = layers.batch_norm_infer(data=conv1, epsilon=2e-5, axis=bn_axis, name=name + "_bn2")
         act2 = relay.nn.relu(data=bn2)
@@ -86,6 +92,7 @@ def residual_unit(
             name=name + "_conv2",
             data_layout=data_layout,
             kernel_layout=kernel_layout,
+            iiinfo=iiinfo,
         )
         bn3 = layers.batch_norm_infer(data=conv2, epsilon=2e-5, axis=bn_axis, name=name + "_bn3")
         act3 = relay.nn.relu(data=bn3)
@@ -98,6 +105,7 @@ def residual_unit(
             name=name + "_conv3",
             data_layout=data_layout,
             kernel_layout=kernel_layout,
+            iiinfo=iiinfo,
         )
         if dim_match:
             shortcut = data
@@ -110,6 +118,7 @@ def residual_unit(
                 name=name + "_sc",
                 data_layout=data_layout,
                 kernel_layout=kernel_layout,
+                iiinfo=iiinfo,
             )
         return relay.add(conv3, shortcut)
 
@@ -124,6 +133,7 @@ def residual_unit(
         name=name + "_conv1",
         data_layout=data_layout,
         kernel_layout=kernel_layout,
+        iiinfo=iiinfo,
     )
     bn2 = layers.batch_norm_infer(data=conv1, epsilon=2e-5, axis=bn_axis, name=name + "_bn2")
     act2 = relay.nn.relu(data=bn2)
@@ -136,6 +146,7 @@ def residual_unit(
         name=name + "_conv2",
         data_layout=data_layout,
         kernel_layout=kernel_layout,
+        iiinfo=iiinfo
     )
 
     if dim_match:
@@ -149,6 +160,7 @@ def residual_unit(
             name=name + "_sc",
             data_layout=data_layout,
             kernel_layout=kernel_layout,
+            iiinfo=iiinfo,
         )
     return relay.add(conv2, shortcut)
 
@@ -162,6 +174,7 @@ def resnet(
     bottle_neck=True,
     layout="NCHW",
     dtype="float32",
+    lane=None,
 ):
     """Return ResNet Program.
 
@@ -193,7 +206,12 @@ def resnet(
     """
 
     data_layout = layout
-    kernel_layout = "OIHW" if layout == "NCHW" else "HWIO"
+    kernel_layout_first = "OIHW" if layout == "NCHW" else "HWIO"
+    if lane:
+        assert data_layout == "NHWC"
+        kernel_layout = "HWOI"
+    else:
+        kernel_layout = kernel_layout_first
     bn_axis = data_layout.index("C")
 
     num_unit = len(units)
@@ -214,7 +232,7 @@ def resnet(
             padding=(1, 1),
             name="conv0",
             data_layout=data_layout,
-            kernel_layout=kernel_layout,
+            kernel_layout=kernel_layout_first,
         )
     else:  # often expected to be 224 such as imagenet
         body = layers.conv2d(
@@ -225,7 +243,7 @@ def resnet(
             padding=(3, 3),
             name="conv0",
             data_layout=data_layout,
-            kernel_layout=kernel_layout,
+            kernel_layout=kernel_layout_first,
         )
         body = layers.batch_norm_infer(data=body, epsilon=2e-5, axis=bn_axis, name="bn0")
         body = relay.nn.relu(data=body)
@@ -243,6 +261,7 @@ def resnet(
             bottle_neck=bottle_neck,
             data_layout=data_layout,
             kernel_layout=kernel_layout,
+            lane=lane,
         )
         for j in range(units[i] - 1):
             body = residual_unit(
@@ -254,6 +273,7 @@ def resnet(
                 bottle_neck=bottle_neck,
                 data_layout=data_layout,
                 kernel_layout=kernel_layout,
+                lane=lane,
             )
     bn1 = layers.batch_norm_infer(data=body, epsilon=2e-5, axis=bn_axis, name="bn1")
     relu1 = relay.nn.relu(data=bn1)
@@ -272,6 +292,7 @@ def get_net(
     image_shape=(3, 224, 224),
     layout="NCHW",
     dtype="float32",
+    lane=None,
     **kwargs,
 ):
     """
@@ -329,6 +350,7 @@ def get_net(
         bottle_neck=bottle_neck,
         layout=layout,
         dtype=dtype,
+        lane=lane,
     )
 
 
@@ -339,6 +361,7 @@ def get_workload(
     image_shape=(3, 224, 224),
     layout="NCHW",
     dtype="float32",
+    lane=None,
     **kwargs,
 ):
     """Get benchmark workload for resnet
@@ -381,6 +404,7 @@ def get_workload(
         image_shape=image_shape,
         dtype=dtype,
         layout=layout,
+        lane=lane,
         **kwargs,
     )
     return create_workload(net)

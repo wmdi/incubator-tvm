@@ -18,6 +18,7 @@
 """Schedule for ARM CPU"""
 
 from .conv2d import *
+from .iiconv2d import *
 from .depthwise_conv2d import *
 from .conv2d_transpose import *
 from .conv2d_int8 import *

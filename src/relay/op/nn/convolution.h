@@ -297,6 +297,186 @@ bool Conv2DRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
 }
 
 template <typename AttrType>
+bool IIConv2DRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
+              const TypeReporter& reporter) {
+  ICHECK_EQ(types.size(), 4);
+  const auto* data = types[0].as<TensorTypeNode>();
+  const auto* weight = types[1].as<TensorTypeNode>();
+  if (data == nullptr) return false;
+  static const Layout kNCHW("NCHW");
+  static const Layout kOIHW("OIHW");
+
+  const AttrType* param = attrs.as<AttrType>();
+  ICHECK(param != nullptr);
+  const Layout in_layout(param->data_layout);
+  const Layout kernel_layout(param->kernel_layout);
+
+  const auto trans_in_layout = tir::BijectiveLayout(in_layout, kNCHW);
+  if (!trans_in_layout.defined()) {
+    reporter->GetDiagCtx().Emit(
+        Diagnostic::Error(reporter->GetSpan())
+        << "conv2d only support input layouts that are convertible from NCHW."
+        << " The provided layout is: " << in_layout);
+    return false;
+  }
+
+  const auto trans_kernel_layout = tir::BijectiveLayout(kernel_layout, kOIHW);
+  if (!trans_kernel_layout.defined()) {
+    reporter->GetDiagCtx().Emit(
+        Diagnostic::Error(reporter->GetSpan())
+        << "conv2d only support kernel layouts that are convertible from OIHW."
+        << " The provided layout is: " << kernel_layout);
+    return false;
+  }
+
+  Layout out_layout(param->out_layout == "" ? param->data_layout : param->out_layout);
+  const auto trans_out_layout = tir::BijectiveLayout(out_layout, kNCHW);
+  if (!trans_out_layout.defined()) {
+    reporter->GetDiagCtx().Emit(
+        Diagnostic::Error(reporter->GetSpan())
+        << "conv2d only support output layouts that are convertible from NCHW."
+        << "The provided layout is: " << out_layout);
+    return false;
+  }
+
+  Array<IndexExpr> dshape_nchw = trans_in_layout.ForwardShape(data->shape);
+  bool is_depthwise = false;
+  if (param->groups > 1) {
+    if (!(weight && weight->shape.defined())) {
+      reporter->GetDiagCtx().Emit(
+          Diagnostic::Error(reporter->GetSpan())
+          << "Weight shape must be specified when groups is greater than 1.");
+      return false;
+    }
+
+    Array<IndexExpr> wshape_oihw = trans_kernel_layout.ForwardShape(weight->shape);
+    if (tvm::tir::ExprDeepEqual()(param->groups, dshape_nchw[1]) &&
+        tvm::tir::ExprDeepEqual()(param->groups, wshape_oihw[0])) {
+      is_depthwise = true;
+    }
+  }
+
+  if (!param->table_size.defined()) {
+    reporter->GetDiagCtx().Emit(
+      Diagnostic::Error(reporter->GetSpan())
+      << "Index size must be specified."
+    );
+  }
+  ICHECK_EQ(param->table_size.size(), 2);
+  Array<IndexExpr> ishape = param->table_size;
+  DataType itype = data->dtype;
+  reporter->Assign(types[2], TensorType(ishape, itype));
+
+  IndexExpr channels, dilated_ksize_y, dilated_ksize_x;
+  // infer weight if the kernel_size and channels are defined
+  if (param->kernel_size.defined() && param->channels.defined()) {
+    ICHECK_EQ(param->kernel_size.size(), 2);
+    ICHECK_EQ(param->dilation.size(), 2);
+    Array<IndexExpr> wshape;
+
+    if (is_depthwise) {
+      // infer weight's shape for depthwise convolution
+      wshape = {{dshape_nchw[1], indexdiv(param->channels, dshape_nchw[1]), param->kernel_size[0],
+                param->kernel_size[1]}};
+    } else {
+      wshape = {{param->channels, indexdiv(dshape_nchw[1], param->groups), param->kernel_size[0],
+                param->kernel_size[1]}};
+    }
+
+    wshape = trans_kernel_layout.BackwardShape(wshape);
+    channels = param->channels;
+    dilated_ksize_y = 1 + (param->kernel_size[0] - 1) * param->dilation[0];
+    dilated_ksize_x = 1 + (param->kernel_size[1] - 1) * param->dilation[1];
+
+    DataType weight_dtype = param->table_dtype;
+    if (weight != nullptr) {
+      weight_dtype = weight->dtype;
+    }
+
+    if (param->auto_scheduler_rewritten_layout.size() == 0) {
+      // Normal case: assign result to reporter
+      reporter->Assign(types[1], TensorType(wshape, weight_dtype));
+    } else {
+      // If the layout is rewritten by auto-scheduler,
+      // we just forcly apply the layout provided by auto-scheduler and
+      // skip the normal inference logic.
+      {}  // do nothing
+    }
+  } else {
+    // use weight to infer the conv shape.
+    if (weight == nullptr) return false;
+    auto wshape = trans_kernel_layout.ForwardShape(weight->shape);
+    if (param->kernel_size.defined()) {
+      ICHECK_EQ(param->kernel_size.size(), 2);
+
+      if (!reporter->AssertEQ(param->kernel_size[0], wshape[2])) {
+        reporter->GetDiagCtx().Emit(Diagnostic::Error(reporter->GetSpan())
+                                    << "Conv2D: shape of weight is inconsistent with kernel_size,"
+                                    << " kernel_size=" << param->kernel_size
+                                    << " wshape=" << wshape);
+      }
+
+      if (!reporter->AssertEQ(param->kernel_size[1], wshape[3])) {
+        reporter->GetDiagCtx().Emit(Diagnostic::Error(reporter->GetSpan())
+                                    << "Conv2D: shape of weight is inconsistent with kernel_size,"
+                                    << " kernel_size=" << param->kernel_size
+                                    << " wshape=" << wshape);
+        return false;
+      }
+    }
+
+    if (param->channels.defined() && !reporter->AssertEQ(param->channels, wshape[0])) {
+      reporter->GetDiagCtx().Emit(
+          Diagnostic::Error(reporter->GetSpan())
+          << "conv2D: the first dimensions of the weight tensor (" << wshape << ")"
+          << "does not match the number of channels (" << param->channels << ").");
+      return false;
+    }
+
+    if (!dshape_nchw[1].as<tir::AnyNode>() && !wshape[1].as<tir::AnyNode>()) {
+      if (!reporter->AssertEQ(indexdiv(dshape_nchw[1], param->groups), wshape[1])) {
+        reporter->GetDiagCtx().Emit(Diagnostic::Error(reporter->GetSpan())
+                                    << "conv2d: requires that `"
+                                    << indexdiv(dshape_nchw[1], param->groups) << "`,"
+                                    << " the input channels (" << dshape_nchw[1] << ")"
+                                    << " divided by groups (" << param->groups << ")"
+                                    << ",\n must match the input channels"
+                                    << " of the weight `" << wshape[1]
+                                    << "`, where the weight shape is (" << wshape << ").");
+        return false;
+      }
+    }
+    channels = wshape[0];
+    dilated_ksize_y = 1 + (wshape[2] - 1) * param->dilation[0];
+    dilated_ksize_x = 1 + (wshape[3] - 1) * param->dilation[1];
+  }
+  // dilation
+  Array<IndexExpr> oshape({dshape_nchw[0], channels, 0, 0});
+
+  IndexExpr pad_h, pad_w;
+  GetPaddingHeightWidth(param->padding, &pad_h, &pad_w);
+  if (!dshape_nchw[2].as<tir::AnyNode>()) {
+    oshape.Set(2, indexdiv(dshape_nchw[2] + pad_h - dilated_ksize_y, param->strides[0]) + 1);
+  } else {
+    oshape.Set(2, dshape_nchw[2]);
+  }
+
+  if (!dshape_nchw[3].as<tir::AnyNode>()) {
+    oshape.Set(3, indexdiv(dshape_nchw[3] + pad_w - dilated_ksize_x, param->strides[1]) + 1);
+  } else {
+    oshape.Set(3, dshape_nchw[3]);
+  }
+  DataType out_dtype = param->out_dtype;
+  if (out_dtype.bits() == 0) {
+    out_dtype = data->dtype;
+  }
+  oshape = trans_out_layout.BackwardShape(oshape);
+  // assign output type
+  reporter->Assign(types[3], TensorType(oshape, out_dtype));
+  return true;
+}
+
+template <typename AttrType>
 bool Conv3DRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
                const TypeReporter& reporter) {
   ICHECK_EQ(types.size(), 3);
@@ -422,7 +602,7 @@ bool Conv3DRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
   }
   oshape = trans_out_layout.BackwardShape(oshape);
   // assign output type
-  reporter->Assign(types[2], TensorType(oshape, out_dtype));
+  reporter->Assign(types[3], TensorType(oshape, out_dtype));
   return true;
 }
 
@@ -1243,6 +1423,17 @@ Array<Array<Layout> > ConvInferCorrectLayout(const Attrs& attrs,
   return Array<Array<Layout> >{
       {params->data_layout, params->kernel_layout},
       {params->out_layout == "" ? params->data_layout : params->out_layout}};
+}
+
+template <typename T>
+Array<Array<Layout>> IIConv2dInferCorrectLayout(const Attrs& attrs,
+                                                const Array<Layout>& new_in_layouts,
+                                                const Array<Layout>& old_in_layouts,
+                                                const Array<tvm::relay::Type>& old_in_types) {
+  const T* params = attrs.as<T>();
+  return Array<Array<Layout>> {
+    {params->data_layout, params->kernel_layout, ""},
+    {params->out_layout == "" ? params->data_layout : params->out_layout}};
 }
 
 }  // namespace relay

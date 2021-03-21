@@ -103,8 +103,9 @@ class LocalBuilder(Builder):
 
         for i in range(0, len(measure_inputs), self.n_parallel):
             futures = []
-            for inp in measure_inputs[i : i + self.n_parallel]:
-                ret = self.executor.submit(self.build_func, inp, self.tmp_dir, **self.build_kwargs)
+            for inp in measure_inputs[i: i + self.n_parallel]:
+                ret = self.executor.submit(
+                    self.build_func, inp, self.tmp_dir, **self.build_kwargs)
                 futures.append(ret)
 
             for future in futures:
@@ -265,20 +266,24 @@ class RPCRunner(Runner):
             }
 
             if "cuda" in self.task.target.keys:
-                kwargs["cuda_arch"] = "sm_" + "".join(ctx.compute_version.split("."))
+                kwargs["cuda_arch"] = "sm_" + \
+                    "".join(ctx.compute_version.split("."))
         if self.task.target.device_name == "micro_dev":
-            kwargs.setdefault("build_option", {})["tir.disable_vectorize"] = True
+            kwargs.setdefault("build_option", {})[
+                "tir.disable_vectorize"] = True
 
         return kwargs
 
     def run(self, measure_inputs, build_results):
         results = []
-        remote_args = (self.key, self.host, self.port, self.priority, self.timeout)
+        remote_args = (self.key, self.host, self.port,
+                       self.priority, self.timeout)
 
         for i in range(0, len(measure_inputs), self.n_parallel):
             futures = []
             for measure_inp, build_res in zip(
-                measure_inputs[i : i + self.n_parallel], build_results[i : i + self.n_parallel]
+                measure_inputs[i: i +
+                               self.n_parallel], build_results[i: i + self.n_parallel]
             ):
                 ret = self.executor.submit(
                     run_through_rpc,
@@ -445,7 +450,8 @@ class _WrappedBuildFunc:
 
     def __init__(self, build_func):
         if not hasattr(build_func, "output_format"):
-            raise AttributeError("Expect build_func to have the attribute output_format.")
+            raise AttributeError(
+                "Expect build_func to have the attribute output_format.")
         self.build_func = build_func
 
     def __call__(self, measure_input, tmp_dir, **kwargs):
@@ -463,7 +469,8 @@ class _WrappedBuildFunc:
         tic = time.time()
         try:
             filename = os.path.join(
-                tmp_dir, "tmp_func_%0x.%s" % (getrandbits(64), self.build_func.output_format)
+                tmp_dir, "tmp_func_%0x.%s" % (
+                    getrandbits(64), self.build_func.output_format)
             )
             # TODO(tvm-team) consider linline _build_func_common
             func, arg_info = _build_func_common(measure_input, **kwargs)
@@ -619,7 +626,8 @@ def request_remote(device_key, host=None, port=None, priority=1, timeout=60):
     port = port or int(os.environ["TVM_TRACKER_PORT"])
 
     tracker = _rpc.connect_tracker(host, port)
-    remote = tracker.request(device_key, priority=priority, session_timeout=timeout)
+    remote = tracker.request(
+        device_key, priority=priority, session_timeout=timeout)
     return remote
 
 
@@ -673,7 +681,8 @@ def tvm_callback_cuda_compile(code):
     #   "-gencode", "arch=compute_70,code=sm_70"
     # ]
     target = "fatbin" if isinstance(curr_cuda_target_arch, list) else "ptx"
-    ptx = nvcc.compile_cuda(code, target=target, arch=AutotvmGlobalScope.current.cuda_target_arch)
+    ptx = nvcc.compile_cuda(code, target=target,
+                            arch=AutotvmGlobalScope.current.cuda_target_arch)
     return ptx
 
 

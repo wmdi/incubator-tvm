@@ -27,7 +27,10 @@ class IsaAnalyzer(object):
         self.target = target
         # TODO: actually parse -mcpu
         arch = "armv7e-m"
+
         self._isa_map = ARM_ISA_MAP[arch]
+        if "+neon" in target.mattr:
+            self._isa_map.append("neon")
 
     def __contains__(self, instruction):
         return instruction in self._isa_map

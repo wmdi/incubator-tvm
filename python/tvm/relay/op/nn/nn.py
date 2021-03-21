@@ -235,6 +235,51 @@ def conv2d(
         out_dtype,
     )
 
+def iiconv2d(
+    data,
+    weight,
+    real_value,
+    strides=(1, 1),
+    padding=(0, 0),
+    dilation=(1, 1),
+    groups=1,
+    channels=None,
+    kernel_size=None,
+    table_size=None,
+    data_layout="NHWC",
+    kernel_layout="HWOI",
+    out_layout="",
+    out_dtype="",
+    table_dtype="uint8",
+):
+    r"""
+        relay.op.nn.iiconv2d test
+    """
+    if isinstance(kernel_size, int):
+        kernel_size = (kernel_size, kernel_size)
+    if isinstance(strides, int):
+        strides = (strides, strides)
+    if isinstance(dilation, int):
+        dilation = (dilation, dilation)
+    padding = get_pad_tuple2d(padding)
+    return _make.iiconv2d(
+        data,
+        weight,
+        real_value,
+        strides,
+        padding,
+        dilation,
+        groups,
+        channels,
+        kernel_size,
+        table_size,
+        data_layout,
+        kernel_layout,
+        out_layout,
+        out_dtype,
+        table_dtype,
+    )
+
 
 def conv3d(
     data,

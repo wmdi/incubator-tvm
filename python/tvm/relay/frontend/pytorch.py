@@ -3071,4 +3071,9 @@ def from_pytorch(script_module, input_infos, custom_convert_map=None, default_dt
         ret = _expr.Tuple(ret)
 
     mod["main"] = tvm.relay.Function(_analysis.free_vars(ret), ret)
-    return transform.RemoveUnusedFunctions()(mod), tvm_params
+
+    mod = transform.RemoveUnusedFunctions()(mod)
+
+    
+
+    return mod, tvm_params

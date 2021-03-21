@@ -119,6 +119,32 @@ with the layer input to produce a tensor of outputs.
     .add_type_rel("Conv2D", Conv2DRel<Conv2DAttrs>)
     .set_attr<FInferCorrectLayout>("FInferCorrectLayout", ConvInferCorrectLayout<Conv2DAttrs>);
 
+// relay.nn.iiconv2d
+TVM_REGISTER_NODE_TYPE(IIConv2DAttrs);
+
+TVM_REGISTER_GLOBAL("relay.op.nn._make.iiconv2d")
+    .set_body_typed([](Expr data, Expr weight, Expr real_value, Array<IndexExpr> strides,
+                       Array<IndexExpr> padding, Array<IndexExpr> dilation, int groups,
+                       IndexExpr channels, Array<IndexExpr> kernel_size,
+                       Array<IndexExpr> index_size, String data_layout, String kernel_layout,
+                       String out_layout, DataType out_dtype, DataType index_dtype) {
+      return MakeIIConv<IIConv2DAttrs>(data, weight, real_value, strides, padding, dilation, groups,
+                                       channels, kernel_size, index_size, data_layout,
+                                       kernel_layout, out_layout, out_dtype, index_dtype,
+                                       "nn.iiconv2d");
+    });
+
+RELAY_REGISTER_OP("nn.iiconv2d")
+    .describe(R"code(2D indirect index convolution layer)code" TVM_ADD_FILELINE)
+    .set_attrs_type<IIConv2DAttrs>()
+    .set_num_inputs(3)
+    .add_argument("data", "Tensor", "The input tensor.")
+    .add_argument("weight", "Tensor", "The weight tensor.")
+    .add_argument("table", "Tensor", "The table.")
+    .set_support_level(2)
+    .add_type_rel("IIConv2D", IIConv2DRel<IIConv2DAttrs>)
+    .set_attr<FInferCorrectLayout>("FInferCorrectLayout", IIConv2dInferCorrectLayout<IIConv2DAttrs>);
+
 // relay.nn.conv3d
 TVM_REGISTER_NODE_TYPE(Conv3DAttrs);
 

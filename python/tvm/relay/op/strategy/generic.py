@@ -328,6 +328,46 @@ def conv2d_NCHWc_strategy(attrs, inputs, out_type, target):
     return strategy
 
 
+# iiconv2d
+def wrap_compute_iiconv2d(
+    topi_compute,
+    need_data_layout=False,
+    need_out_layout=False,
+    has_groups=False,
+    need_auto_scheduler_layout=False,
+):
+    """Wrap iiconv2d topi compute"""
+
+    def _compute_iiconv2d(attrs, inputs, out_type):
+        padding = get_const_tuple(attrs.padding)
+        strides = get_const_tuple(attrs.strides)
+        dilation = get_const_tuple(attrs.dilation)
+        data_layout = attrs.get_str("data_layout")
+        out_layout = attrs.get_str("out_layout")
+        out_dtype = attrs.out_dtype
+        out_dtype = inputs[0].dtype if out_dtype in ("same", "") else out_dtype
+        args = [inputs[0], inputs[1], inputs[2], strides, padding, dilation]
+        if has_groups:
+            args.append(attrs.groups)
+        if need_data_layout:
+            args.append(data_layout)
+        if need_out_layout:
+            args.append(out_layout)
+        args.append(out_dtype)
+        if need_auto_scheduler_layout:
+            args.append(get_auto_scheduler_rewritten_layout(attrs))
+        return [topi_compute(*args)]
+
+    return _compute_iiconv2d
+
+
+@override_native_generic_func("iiconv2d_strategy")
+def iiconv2d_strategy(attrs, inputs, out_type, target):
+    """iiconv2d generic strategy"""
+    assert False, "iiconv2d is not supported for this platform."
+    return strategy
+
+
 # depthwise_conv2d_NCHWc
 @override_native_generic_func("depthwise_conv2d_NCHWc_strategy")
 def depthwise_conv2d_NCHWc_strategy(attrs, inputs, out_type, target):

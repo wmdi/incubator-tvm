@@ -64,12 +64,10 @@ def batch_norm_infer(data, gamma=None, beta=None, moving_mean=None, moving_var=N
     )[0]
 
 
-def conv2d(data, weight=None, **kwargs):
+def conv2d(data, weight=None, iiinfo=None, **kwargs):
     """Wrapper of conv2d which automatically creates weights if not given.
 
     Parameters
-    ----------
-    data : relay.Expr
         The input expression.
 
     weight : relay.Expr
@@ -85,9 +83,19 @@ def conv2d(data, weight=None, **kwargs):
     """
     name = kwargs.get("name")
     kwargs.pop("name")
+
+    if not iiinfo:
+        if not weight:
+            weight = relay.var(name + "_weight")
+        return relay.nn.conv2d(data, weight, **kwargs)
+
     if not weight:
-        weight = relay.var(name + "_weight")
-    return relay.nn.conv2d(data, weight, **kwargs)
+        weight = relay.var(name + "_index")
+    if not "table" in iiinfo:
+        table = relay.var(name + "_table")
+    kwargs["table_size"] = iiinfo["table_size"]
+    kwargs["table_dtype"] = iiinfo["table_dtype"]
+    return relay.nn.iiconv2d(data, weight, table, **kwargs)
 
 
 def conv3d(data, weight=None, **kwargs):

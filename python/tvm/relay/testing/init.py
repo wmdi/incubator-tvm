@@ -21,7 +21,6 @@ import numpy as np
 import tvm
 from tvm import relay
 
-
 class Initializer(object):
     """The base class of an initializer."""
 
@@ -39,7 +38,12 @@ class Initializer(object):
         arr : NDArray
             The array to be initialized.
         """
-        if desc.endswith("weight"):
+
+        if desc.endswith("index"):
+            self._init_index(desc, arr)
+        elif desc.endswith("table"):
+            self._init_table(desc, arr)
+        elif desc.endswith("weight"):
             self._init_weight(desc, arr)
         elif desc.endswith("bias"):
             self._init_bias(desc, arr)
@@ -72,6 +76,13 @@ class Initializer(object):
     def _init_weight(self, name, arr):
         """Abstract method to Initialize weight."""
         raise NotImplementedError("Must override it")
+
+    def _init_index(self, _, arr):
+        arr[:] = np.random.randint(256, size=arr.shape)
+
+    def _init_table(self, _, arr):
+        scale = 10000
+        arr[:] = np.random.uniform(-scale, scale, size=arr.shape)
 
     def _init_default(self, name, _):
         raise ValueError(
