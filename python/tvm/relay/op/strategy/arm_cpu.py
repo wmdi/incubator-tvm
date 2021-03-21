@@ -428,16 +428,15 @@ def iiconv2d_strategy_arm_cpu(attrs, inputs, out_type, target):
     isa = arm_isa.IsaAnalyzer(target)
 
     assert "neon" in isa, "iiconv2d now is only supported when neon is enabled."
-    assert groups == 1, "Group iiconv2d is not supported."
     assert layout == "NHWC", "Only layout NHWC is supported for iiconv2d. Provided: {}.".format(layout)
     assert kernel_layout == "HWOI", "Only layout HWOI is supported for iiconv2d. Provided: {}.".format(kernel_layout)
     assert kernel.dtype == "uint8", "Only kernel type uint8 is supported for iiconv2d. Provided: {}.".format(kernel.dtype)
 
     channels = data.shape[3]
 
-    # assert channels % 4 == 0, "Unsupported input channels for iiconv2d HNWC HWOI. Provided: {}.".format(channels)
+    assert channels % 4 == 0, "Unsupported input channels for iiconv2d HNWC HWOI. Provided: {}.".format(channels)
 
-    if channels % 4 == 0:
+    if groups == 1:
         strategy.add_implementation(
             wrap_compute_iiconv2d(topi.arm_cpu.iiconv2d_direct_simd),
             wrap_topi_schedule(topi.arm_cpu.schedule_iiconv2d_direct_simd),
@@ -445,9 +444,8 @@ def iiconv2d_strategy_arm_cpu(attrs, inputs, out_type, target):
         )
     else:
         strategy.add_implementation(
-            wrap_compute_conv2d(topi.arm_cpu.conv2d_nhwc_spatial_pack),
-            wrap_topi_schedule(topi.arm_cpu.schedule_conv2d_nhwc_spatial_pack),
-            name="conv2d_nhwc_spatial_pack.arm_cpu",
+            wrap_compute_iiconv2d(topi.arm_cpu.group_iiconv2d_direct_simd),
+            wrap_topi_schedule(topi.arm_cpu.schedule_group_iiconv2d_direct_simd),
         )
 
     return strategy

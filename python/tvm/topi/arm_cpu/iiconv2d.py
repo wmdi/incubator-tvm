@@ -320,7 +320,7 @@ return 0;
     return ll_code
 
 
-def iiconv2d_direct_simd_compute(cfg, data, kernel, table, strides, padding, dilation, out_dtype):
+def iiconv2d_direct_simd_nhwc_compute(cfg, data, kernel, table, strides, padding, dilation, out_dtype):
     assert isinstance(strides, int) or len(strides) == 2
     assert isinstance(dilation, int) or len(dilation) == 2
 
@@ -467,10 +467,10 @@ def iiconv2d_direct_simd_nhwc_schedule(cfg, outs):
 
 
 @autotvm.register_topi_compute("iiconv2d_direct_simd.arm_cpu")
-def iiconv2d_direct_simd(cfg, data, kernel, index, strides, padding, dilation, out_dtype):
+def iiconv2d_direct_simd(cfg, data, kernel, table, strides, padding, dilation, out_dtype):
     """Compute conv2d with SIMD (v7-a) """
-    return iiconv2d_direct_simd_compute(
-        cfg, data, kernel, index, strides, padding, dilation, out_dtype
+    return iiconv2d_direct_simd_nhwc_compute(
+        cfg, data, kernel, table, strides, padding, dilation, out_dtype
     )
 
 @autotvm.register_topi_schedule("iiconv2d_direct_simd.arm_cpu")
@@ -479,141 +479,74 @@ def schedule_iiconv2d_direct_simd(cfg, outs):
     return iiconv2d_direct_simd_nhwc_schedule(cfg, outs)
 
 
-
-def conv2d_nhwc_hwoi(cfg, data, kernel, strides, padding, dilation, out_dtype):
-    assert isinstance(strides, int) or len(strides) == 2
+def group_iiconv2d_direct_simd_nhwc_compute(data, kernel, table, strides, padding, dilation, groups, out_dtype):
+    """Group indirect index convolution operator in NHWC layout."""
+    assert isinstance(stride, int) or len(stride) == 2
     assert isinstance(dilation, int) or len(dilation) == 2
-
-    if isinstance(strides, int):
-        stride_h = stride_w = strides
+    if isinstance(stride, int):
+        stride_h = stride_w = stride
     else:
-        stride_h, stride_w = strides
+        stride_h, stride_w = stride
 
     if isinstance(dilation, int):
         dilation_h = dilation_w = dilation
     else:
         dilation_h, dilation_w = dilation
 
-    batch_size, in_height, in_width, in_channels = data.shape
-    kernel_h, kernel_w, out_channels, _ = kernel.shape
+    batch, in_height, in_width, in_channel = get_const_tuple(data.shape)
+    kernel_h, kernel_w, out_channel, _ = get_const_tuple(kernel.shape)
 
+    assert in_channel % groups == 0, "input channels must divide group size"
+    assert out_channel % groups == 0, "output channels must divide group size"
+
+    pad_top, pad_left, pad_down, pad_right = get_pad_tuple(padding, (kernel_h, kernel_w))
     # compute the output shape
-    dilated_kernel_h = (kernel_h - 1) * dilation_h + 1
-    dilated_kernel_w = (kernel_w - 1) * dilation_w + 1
-    pad_top, pad_left, pad_down, pad_right = get_pad_tuple(
-        padding, (dilated_kernel_h, dilated_kernel_w)
-    )
     out_height = simplify(
-        (in_height - dilated_kernel_h + pad_top + pad_down) // stride_h + 1)
-    out_width = simplify((in_width - dilated_kernel_w +
-                        pad_left + pad_right) // stride_w + 1)
-
+        (in_height - (kernel_h - 1) * dilation_h - 1 + pad_top + pad_down) // stride_h + 1
+    )
+    out_width = simplify(
+        (in_width - (kernel_w - 1) * dilation_w - 1 + pad_left + pad_right) // stride_w + 1
+    )
+    # compute graph
     pad_before = [0, pad_top, pad_left, 0]
     pad_after = [0, pad_down, pad_right, 0]
-    padded_data = pad(data, pad_before, pad_after, name="padded_data")
-
-    rc = te.reduce_axis((0, in_channels), name="rc")
+    temp = pad(data, pad_before, pad_after, name="pad_temp")
     ry = te.reduce_axis((0, kernel_h), name="ry")
     rx = te.reduce_axis((0, kernel_w), name="rx")
-
-    assert out_channels % 4 == 0
-
-    conv = te.compute(
-        (batch_size, out_height, out_width, out_channels),
+    rc = te.reduce_axis((0, in_channel // groups), name="rc")
+    output = te.compute(
+        (batch, out_height, out_width, out_channel),
         lambda nn, yy, xx, ff: te.sum(
-            padded_data[
-                nn, yy * stride_h + ry * dilation_h, xx * stride_w + rx * dilation_w, rc
+            temp[
+                nn,
+                yy * stride_h + ry * dilation_h,
+                xx * stride_w + rx * dilation_w,
+                ff // (out_channel // groups) * (in_channel // groups) + rc,
             ].astype(out_dtype)
-            * kernel[ry, rx, ff, rc].astype(out_dtype),
+            * table[kernel[ry, rx, ff, rc]].astype(out_dtype),
             axis=[ry, rx, rc],
         ),
-        name="conv2d",
-        tag=f"conv2d_nhwc_hwoi",
+        tag=f"group_iiconv2d_nhwc_{stride_w}",
     )
 
-    ###########################
-    # Config Space Definition #
-    ###########################
-    n, oh, ow, co = (
-        cfg.axis(batch_size.value),
-        cfg.axis(out_height.value),
-        cfg.axis(out_width.value),
-        cfg.axis(out_channels.value),
-    )
-    kh, kw, ci = (
-        cfg.reduce_axis(kernel_h.value),
-        cfg.reduce_axis(kernel_w.value),
-        cfg.reduce_axis(in_channels.value),
-    )
-
-    assert in_channels.value % 4 == 0
-    owo, owi = cfg.define_split("tile_ow", ow, policy="factors", num_outputs=2)
-    cio, cii = cfg.define_split(
-        "tile_ci", ci, policy="factors", num_outputs=2
-    )
-    coo, coi = cfg.define_split(
-        "tile_co", co, policy="factors", num_outputs=2)
-
-    cfg.define_reorder(
-        "reorder_0_simd",
-        [n, oh, owo, owi, coo, coi, kh, kw, cio, cii],
-        policy="candidate",
-        candidate=[
-            [n, oh, owo, coo, cio, kh, kw, owi, coi, cii],
-            [n, coo, oh, owo, cio, kh, kw, owi, coi, cii],
-        ],
-    )
-
-    cfg.define_knob("auto_unroll_max_step", [0, 2, 4, 8, 16, 32])
-
-    return conv
+    return output
 
 
-def conv2d_direct_simd_nhwc_schedule(cfg, outs):
+def group_iiconv2d_direct_simd_nhwc_schedule(cfg, outs):
     sched = te.create_schedule([x.op for x in outs])
-
-    def _callback(op):
-        if "conv2d_nhwc_hwoi" not in op.tag:
-            return
-
-        # extract tensors
-        output = op.output(0)
-        conv = op
-        data_vec = conv.input_tensors[0]
-        kernel = conv.input_tensors[1]  # pylint: disable=unused-variable
-        last = outs[0]  # pylint: disable=unused-variable
-
-        # tile reduction axes
-        n, oh, ow, co = sched[conv].op.axis
-        kh, kw, ci = sched[conv].op.reduce_axis
-
-        M = cfg["tile_ow"].size[-1]
-        K = cfg["tile_ci"].size[-1]
-        N = cfg["tile_co"].size[-1]
-
-        owo, owi = cfg["tile_ow"].apply(sched, conv, ow)
-        cio, cii = cfg["tile_ci"].apply(sched, conv, ci)
-        coo, coi = cfg["tile_co"].apply(sched, conv, co)
-
-        cfg["reorder_0_simd"].apply(
-            sched, conv, [n, oh, owo, owi, coo, coi, kh, kw, cio, cii])
-
-        # tune unroll
-        sched[output].pragma(
-            kernel_scope, "auto_unroll_max_step", cfg["auto_unroll_max_step"].val)
-
-    traverse_inline(sched, outs[-1].op, _callback)
     return sched
 
 
-@autotvm.register_topi_compute("conv2d_nhwc_hwoi.arm_cpu")
-def conv2d_nhwc_hwoi(cfg, data, kernel, index, strides, padding, dilation, out_dtype):
-    """Compute conv2d with SIMD (v7-a) """
-    return conv2d_nhwc_hwoi(
-        cfg, data, kernel, index, strides, padding, dilation, out_dtype
+@autotvm.register_topi_compute("group_iiconv2d_direct_simd.arm_cpu")
+def group_iiconv2d_direct_simd(cfg, data, kernel, table, strides, padding, dilation, out_dtype):
+    """Compute iiconv2d with SIMD (v7-a) """
+    return group_iiconv2d_direct_simd_nhwc_compute(
+        cfg, data, kernel, table, strides, padding, dilation, out_dtype
     )
 
-@autotvm.register_topi_schedule("conv2d_nhwc_hwoi.arm_cpu")
-def schedule_conv2d_nhwc_hwoi(cfg, outs):
-    """Create schedule for iiconv2d_direct_simd"""
-    return conv2d_nhwc_hwoi(cfg, outs)
+
+@autotvm.register_topi_schedule("group_iiconv2d_direct_simd.arm_cpu")
+def schedule_group_iiconv2d_direct_simd(cfg, outs):
+    """Create schedule for group_iiconv2d_direct_simd"""
+    return group_iiconv2d_direct_simd_nhwc_schedule(cfg, outs)
+
